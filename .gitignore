@@ -163,3 +163,4 @@ cython_debug/
 
 .DS_Store
 /data/enwiki.wikilink_graph.2018-03-01.csv.gz
+/data/combined_wikilink_graph_0_100.graphml
