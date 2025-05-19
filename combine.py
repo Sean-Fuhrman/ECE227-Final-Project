@@ -1,13 +1,14 @@
 import glob
 import networkx as nx
 import os
+import re
 
 chunks_dir = "data/chunks/"
 output_file = "data/combined_wikilink_graph.graphml"
 os.makedirs(chunks_dir, exist_ok=True)
 
 def combine_chunks(output_dir, final_output_file):
-    chunk_files = sorted(glob.glob(f"{output_dir}/chunk_*.graphml"))
+    chunk_files = sorted(glob.glob(f"{output_dir}/chunk_*.graphml"), key=lambda x: int(re.search(r'chunk_(\d+)', x).group(1)))
     combined_graph = nx.DiGraph()
 
     # Merge graphs

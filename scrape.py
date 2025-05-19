@@ -7,8 +7,8 @@ input_file = "data/enwiki.wikilink_graph.2018-03-01.csv.gz"
 output_dir = "data/chunks/"
 os.makedirs(output_dir, exist_ok=True)
 
-chunk_size = 1000
-chunk_limit = 5
+chunk_size = 10000
+chunk_limit = 1000
 
 def clean_chunk(chunk):
     return chunk.applymap(lambda x: x.strip() if isinstance(x, str) else x)
