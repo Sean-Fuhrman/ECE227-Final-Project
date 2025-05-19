@@ -4,7 +4,7 @@ import os
 import re
 
 chunks_dir = "data/chunks/"
-output_file = "data/combined_wikilink_graph.graphml"
+output_file = "data/combined_wikilink.graphml"
 os.makedirs(chunks_dir, exist_ok=True)
 
 def combine_chunks(output_dir, final_output_file):
