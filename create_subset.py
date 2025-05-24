@@ -1,128 +1,147 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Make a 100 000-node subgraph from a (possibly large) directed GraphML,
-preserving the average out-degree ≈ E/N of the original.
+extract_slice.py  –  Build a Wiki-race-friendly sub-graph with titles
+Compatible with NetworKit 8.x → 10.x (Windows wheels included).
+
+Example:
+    python extract_slice.py --size 100000 --radius 3
 """
-import sys, random, argparse
+
+import argparse, random, time, math
 from pathlib import Path
+
+import networkit as nk
+from networkit import distance
+import pandas as pd
 import networkx as nx
 
-import random
-import networkx as nx
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--graph",  default="data/enwiki_2018.nkbg",
+                   help="NetworKit .nkbg file")
+    p.add_argument("--titles", default="data/node_titles.parquet",
+                   help="Parquet with id ↔ title")
+    p.add_argument("--size",   type=int, default=100_000,
+                   help="Target #nodes in the slice (approx.)")
+    p.add_argument("--radius", type=int, default=3,
+                   help="Directed BFS depth from the seed page")
+    p.add_argument("--seed",   type=int, default=42,
+                   help="RNG seed (-1 = random each run)")
+    p.add_argument("--out",    default="wiki_slice_subset.graphml",
+                   help="Output GraphML file")
+    return p.parse_args()
 
 
-def sample_connected_subgraph(
-    G: nx.DiGraph,
-    target_nodes: int = 100_000,
-    strong: bool = False,
-    max_retries: int = 50,
-    seed: int = 42,
-) -> nx.DiGraph:
-    """
-    Return a subgraph with exactly `target_nodes` nodes that is either
-    weakly or strongly connected **and** whose edge-to-node ratio matches
-    the original graph in expectation.
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+def out_deg(G: nk.graph.Graph, u: int) -> int:
+    """True out-degree on any NetworKit version."""
+    return G.degreeOut(u)
 
-    strong=False  → weakly connected (recommended for Wikirace)
-    strong=True   → strongly connected (may take many retries)
-    """
-    rng = random.Random(seed)
-    orig_density = G.number_of_edges() / G.number_of_nodes()
-    target_edges = int(round(orig_density * target_nodes))
 
-    # Pre-index edges for quick random access
-    all_edges = list(G.edges())
+def prune_all_sinks(G: nk.graph.Graph):
+    """Iteratively remove nodes whose **out-degree** becomes 0."""
+    total = 0
+    while True:
+        sinks = [u for u in G.iterNodes() if out_deg(G, u) == 0 or G.degreeIn(u) == 0]
+        if not sinks:
+            break
+        for u in sinks:
+            G.removeNode(u)
+        total += len(sinks)
+        print(f"  • removed {len(sinks):,} sinks; "
+              f"{G.numberOfNodes():,} nodes remain")
+    print(f"Finished pruning ({total:,} total nodes removed).")
 
-    for attempt in range(1, max_retries + 1):
-        # ── 1.  Pick a random seed node and snowball outwards ───────────────
-        seed_node = rng.choice(tuple(G.nodes()))
-        seen = {seed_node}
-        frontier = [seed_node]
 
-        while frontier and len(seen) < target_nodes:
-            print(f"↺  Attempt {attempt}: expanding frontier of {len(frontier):,} nodes", end="\r")
-            new_frontier = []
-            for u in frontier:
-                # Expand neighbours *ignoring* direction for coverage speed
-                for nbr in G.successors(u):
-                    if nbr not in seen:
-                        seen.add(nbr)
-                        new_frontier.append(nbr)
-                        if len(seen) == target_nodes:
-                            break
-                if len(seen) == target_nodes:
-                    break
-            frontier = new_frontier
+def k_ball(G: nk.graph.Graph, src: int, k: int):
+    """Directed k-hop neighbourhood of `src` (node IDs are original)."""
+    bfs = distance.BFS(G, src, True, True)
+    bfs.run()
+    dists = bfs.getDistances()
+    return [v for v, d in enumerate(dists) if d <= k]
 
-        if len(seen) < target_nodes:
-            # Rare – ran out of reachable nodes; try a new seed
+
+def clean(val):
+    """Return a GraphML-safe primitive value."""
+    if val is None:
+        return ""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return ""
+    return str(val)
+
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+def main():
+    args = parse_args()
+    rng  = random.Random(None if args.seed < 0 else args.seed)
+    print(f"Using RNG seed: {args.seed}   (random={args.seed < 0})")
+
+    # 1) Load full graph -----------------------------------------------------
+    t0 = time.time()
+    nkG = nk.graphio.readGraph(args.graph, nk.Format.NetworkitBinary)
+    print(f"Loaded full graph: {nkG.numberOfNodes():,} nodes / "
+          f"{nkG.numberOfEdges():,} edges   [{time.time() - t0:.1f}s]")
+
+    # 2) Prune every sink ----------------------------------------------------
+    print("Pruning sink nodes (out-degree 0) …")
+    prune_all_sinks(nkG)
+
+    # 3) Pick seed & collect radius-k ball ----------------------------------
+    attempt = 0
+    while True:
+        seed = rng.randrange(nkG.numberOfNodes())
+        if out_deg(nkG, seed) == 0:          # still a sink? resample
             continue
+        ball = k_ball(nkG, seed, args.radius)
+        print(f"Attempt #{attempt+1}: seed {seed} → "
+              f"{len(ball):,} nodes in radius-{args.radius} ball")
+        if args.size // 2 <= len(ball) <= args.size * 2:
+            break
+        attempt += 1
+        if attempt > 25:
+            raise RuntimeError("Couldn’t hit requested size ±2×; "
+                               "increase --radius or --size.")
 
-        # ── 2.  Build an *induced* subgraph on that node set ────────────────
-        H = G.subgraph(seen).copy()
+    print(f"Seed page id: {seed}")
+    print(f"Slice size  : {len(ball):,} nodes (target ≈{args.size:,})")
 
-        # ── 3.  Top-up edges to match target density if needed ──────────────
-        if H.number_of_edges() < target_edges:
-            rng.shuffle(all_edges)
-            for u, v in all_edges:
-                if u in H and v in H and not H.has_edge(u, v):
-                    H.add_edge(u, v)
-                    if H.number_of_edges() >= target_edges:
-                        break
+    # 4) Build the slice directly in NetworkX (IDs stay original) -----------
+    G = nx.DiGraph()
+    G.add_nodes_from(ball)
 
-        # ── 4.  Connectivity check ─────────────────────────────────────────
-        is_conn = (
-            nx.is_strongly_connected(H) if strong else nx.is_weakly_connected(H)
-        )
-        if is_conn:
-            print(
-                f"✅  Connected subgraph found on attempt {attempt} "
-                f"({H.number_of_nodes():,} nodes, {H.number_of_edges():,} edges)"
-            )
-            return H
+    ball_set = set(ball)          # for fast membership
+    for u in ball:
+        for v in nkG.iterNeighbors(u):
+            if v in ball_set:
+                G.add_edge(u, v)
 
-        print(f"↺  Attempt {attempt}: subgraph not {'strongly' if strong else 'weakly'} connected")
+    print("Converted to NetworkX (no renumbering).")
 
-    raise RuntimeError(
-        f"Failed to find a {'strongly' if strong else 'weakly'} connected "
-        f"subgraph of {target_nodes:,} nodes after {max_retries} attempts"
-    )
+    # 5) Attach titles -------------------------------------------------------
+    titles_raw = pd.read_parquet(args.titles).set_index("id")["title"]
+    titles = {int(k): str(v) for k, v in titles_raw.items()}
 
+    nx.set_node_attributes(G,
+        {n: {"title": titles.get(n, "")} for n in G.nodes})
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("input", type=Path, help="Source GraphML (directed)")
-    ap.add_argument("-o", "--output", type=Path,
-                    default=Path("data/combined_wikilink_subset.graphml"))
-    ap.add_argument("-n", "--nodes", type=int, default=100_000)
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
+    # ensure every attribute is GraphML-safe
+    for _, data in G.nodes(data=True):
+        for k, v in data.items():
+            data[k] = clean(v)
 
-    G = nx.read_graphml(args.input)
-    if not G.is_directed():
-        G = G.to_directed()
+    # 6) Save ---------------------------------------------------------------
+    nx.write_graphml(G, args.out)
+    print(f"✅  Saved slice → {args.out}  "
+          f"({G.number_of_nodes():,} nodes / {G.number_of_edges():,} edges)")
 
-    print(
-        f"📥  Loaded {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges "
-        f"(avg out-deg ≈ {G.number_of_edges()/G.number_of_nodes():.2f})",
-        file=sys.stderr,
-    )
-
-    if G.number_of_nodes() < args.nodes:
-        sys.exit("Graph too small for requested sample size.")
-
-    H = sample_connected_subgraph(
-        G,
-        target_nodes=args.nodes,
-        strong=False,          # set True if you really need strong SCC
-        seed=args.seed)
-
-    nx.write_graphml(H, args.output)
-    print(
-        f"📦  Subgraph: {H.number_of_nodes():,} nodes, {H.number_of_edges():,} edges "
-        f"(avg out-deg ≈ {H.number_of_edges()/H.number_of_nodes():.2f}) → {args.output}",
-        file=sys.stderr,
-    )
 
 if __name__ == "__main__":
     main()

@@ -170,3 +170,10 @@ data/chunks/*
 !data/chunks/chunk_[1-2][0-9][0-9].graphml
 !data/chunks/chunk_3[0-4][0-9].graphml
 !data/chunks/chunk_349.graphml
+data/wiki_slice_subset.graphml
+
+data/node_titles.parquet
+
+data/enwiki_2018.nkbg
+
+data/enwiki_2018_core.nkbg
