@@ -18,6 +18,7 @@ import argparse
 import networkx as nx
 from pathlib import Path
 from typing import Optional, TextIO
+from tqdm import tqdm
 
 def write_paths(
     G: nx.Graph,
@@ -29,7 +30,7 @@ def write_paths(
 
     Each line:  source<TAB>target<TAB>node1,node2,...,nodeK
     """
-    for src, paths in nx.all_pairs_shortest_path(G):
+    for src, paths in tqdm(nx.all_pairs_shortest_path(G)):
         for tgt, path in paths.items():
             # Skip trivial 1-node paths (src == tgt) if you don’t want them:
             if src == tgt: continue
