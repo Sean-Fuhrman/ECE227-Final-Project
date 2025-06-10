@@ -188,46 +188,33 @@ def main():
     # print(f"Stratified sample size: {nkG.number_of_nodes():,} nodes "
     #         f"({nkG.number_of_edges():,} edges)")
     # convert to undirected
+    print("Converting to undirected graph…")
     nkG = nk.graphtools.toUndirected(nkG)
-    louvain = nk.community.PLM(nkG)  # gamma≈1 → “standard” Louvain
+    print("running Louvain community detection…")
+    louvain = nk.community.PLM(nkG, turbo=False )  # gamma≈1 → “standard” Louvain
     louvain.run()
     part = louvain.getPartition()                              # nk.structures.Partition
 
-    ###############################################################################
-    # 3.  Rank communities by size
-    ###############################################################################
-    # Build a list of (community-id, size) pairs
     try:
-        size_map = part.subsetSizeMap()     # modern NetworKit API (dict {cid:size})
-    except AttributeError:                  # very old NetworKit fallback
-        size_map = {cid: part.subsetSize(cid)
-                    for cid in range(part.upperBound())
-                    if part.subsetSize(cid) > 0}
+        cid_iter = part.subsetSizeMap().keys()        # NetworKit ≥10
+    except AttributeError:                            # older fallback
+        cid_iter = (
+            cid for cid in range(part.upperBound())
+            if part.subsetSize(cid) > 0
+        )
 
-    # Sort communities by size (descending)
-    by_size = sorted(size_map.items(), key=lambda x: x[1], reverse=True)
+    comm_dict: dict[int, list[int]] = {}
+    for cid in cid_iter:
+        members = list(part.getMembers(cid))          # C++ → Python list
+        comm_dict[int(cid)] = members                 # ensure JSON-serialisable
 
-    # Pick IDs to keep
-    top = by_size[:50]
-    bottom = sorted(by_size[-5:], key=lambda x: x[1])   # small → large
-    keep_cids = {cid for cid, _ in top + bottom}
+    out_file = args.out.replace(".graphml", "_louvain.json")
+    import json
+    # --- 3. Write to disk ----------------------------------------------------
+    out_path = Path(out_file)
+    out_path.write_text(json.dumps(comm_dict))
 
-    ###############################################################################
-    # 4.  Collect nodes that belong to the selected communities
-    ###############################################################################
-    ball = []
-    for cid in keep_cids:
-        ball.extend(part.getMembers(cid))   # fast C++ call
-
-    # # 4) Build the slice directly in NetworkX (IDs stay original) -----------
-    G = nx.DiGraph()
-    G.add_nodes_from(ball)
-
-    ball_set = set(ball)          # for fast membership
-    for u in ball:
-        for v in nkG.iterNeighbors(u):
-            if v in ball_set:
-                G.add_edge(u, v)
+    print(f"✔ Louvain communities written to {out_path.resolve()}")
 
     # # print("Converted to NetworkX (no renumbering).")
 
@@ -254,22 +241,22 @@ def main():
     # print("Graph saved as degree_distribution.png")
     
     
-     # 5) Attach titles -------------------------------------------------------
-    titles_raw = pd.read_parquet(args.titles).set_index("id")["title"]
-    titles = {int(k): str(v) for k, v in titles_raw.items()}
+    #  # 5) Attach titles -------------------------------------------------------
+    # titles_raw = pd.read_parquet(args.titles).set_index("id")["title"]
+    # titles = {int(k): str(v) for k, v in titles_raw.items()}
 
-    nx.set_node_attributes(G,
-        {n: {"title": titles.get(n, "")} for n in G.nodes})
+    # nx.set_node_attributes(G,
+    #     {n: {"title": titles.get(n, "")} for n in G.nodes})
 
-    # ensure every attribute is GraphML-safe
-    for _, data in G.nodes(data=True):
-        for k, v in data.items():
-            data[k] = clean(v)
+    # # ensure every attribute is GraphML-safe
+    # for _, data in G.nodes(data=True):
+    #     for k, v in data.items():
+    #         data[k] = clean(v)
 
-    # 6) Save ---------------------------------------------------------------
-    nx.write_graphml(G, args.out)
-    print(f"✅  Saved slice → {args.out}  "
-          f"({G.number_of_nodes():,} nodes / {G.number_of_edges():,} edges)")
+    # # 6) Save ---------------------------------------------------------------
+    # nx.write_graphml(G, args.out)
+    # print(f"✅  Saved slice → {args.out}  "
+    #       f"({G.number_of_nodes():,} nodes / {G.number_of_edges():,} edges)")
 
 if __name__ == "__main__":
     main()
